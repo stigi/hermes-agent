@@ -53,6 +53,18 @@ services:
       - HERMES_DASHBOARD_HOST=127.0.0.1
       - HERMES_DASHBOARD_PORT=9119
     command: ["gateway", "run"]
+    # Liveness probe: a TCP connect to the loopback dashboard port. If 9119 is
+    # listening, the container's python/app stack is up. NOTE: a Docker
+    # healthcheck only REPORTS status (Coolify dot + deploy gating); it does not
+    # restart the container — s6 inside the container handles crash-restart of
+    # the gateway/dashboard. start_period is generous because first boot syncs
+    # skills and sets up the browser before the dashboard binds.
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import socket; socket.create_connection(('127.0.0.1', 9119), timeout=3).close()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
     security_opt:
       - no-new-privileges:true
     # Now one container runs gateway + dashboard + (on demand) a headless
