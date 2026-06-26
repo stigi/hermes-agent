@@ -1,23 +1,36 @@
 #
 # docker-compose.yml — customized for Coolify deploy (branch: deploy)
 #
+# SINGLE-CONTAINER layout: one container runs the gateway AND the dashboard,
+# both supervised by the image's s6 init (dashboard enabled via
+# HERMES_DASHBOARD=1). Why one container and not two: the dashboard detects the
+# gateway in its OWN container (local pid/IPC), so a split deployment makes the
+# dashboard report "gateway not running" even when it is — and two full s6
+# stacks also risk duplicate Telegram pollers / port collisions under
+# network_mode: host. Co-locating them fixes the status indicator and the
+# duplication in one move.
+#
+# Dashboard is bound to loopback (127.0.0.1). The dashboard's auth gate only
+# engages on NON-loopback binds, so loopback needs no credentials. Reach it via
+# an SSH tunnel:   ssh -L 9119:localhost:9119 pi   then open http://localhost:9119
+# (If you ever expose it on the LAN/Tailscale, set HERMES_DASHBOARD_HOST to that
+#  address AND add HERMES_DASHBOARD_BASIC_AUTH_USERNAME/_PASSWORD — the gate will
+#  then be mandatory.)
+#
 # Differences from upstream main:
-#   - gateway + dashboard both `build: .` with `pull_policy: build`, so Coolify
-#     builds the image from source instead of trying to pull a non-existent one.
-#   - OPENROUTER_API_KEY + TELEGRAM_BOT_TOKEN are injected from Coolify's
-#     environment (set them as secrets in Coolify — NOT committed here).
-#   - named volume `hermes-data` instead of a ~/.hermes host bind (cleaner under
-#     Coolify, and keeps the agent out of a host home dir).
+#   - build: . + pull_policy: build, so Coolify builds the image from source.
+#   - OPENROUTER_API_KEY + TELEGRAM_BOT_TOKEN injected from Coolify env (secrets;
+#     NOT committed here). Coolify also forwards its other env vars (e.g.
+#     TELEGRAM_ALLOWED_USERS) into the container, so they need not be listed.
+#   - named volume hermes-data instead of a ~/.hermes host bind. The agent's
+#     config.yaml (model selection etc.) lives in this volume at
+#     /opt/data/config.yaml — edit there + restart to change models.
 #   - light, s6-safe hardening: no-new-privileges + memory/pid limits.
 #
 # Kept from upstream (do NOT change without care):
-#   - network_mode: host and the s6-overlay `/init` entrypoint. The image starts
-#     as root to chown/remap to uid 10000 then drops each service to that
-#     non-root user — so `cap_drop: ALL` would break init. Services already run
-#     non-root, which is the main isolation.
-#   - dashboard binds 127.0.0.1:9119 only. It stores API keys; do NOT expose it
-#     on the LAN. Reach it via SSH tunnel:  ssh -L 9119:localhost:9119 pi
-#     then open http://localhost:9119
+#   - network_mode: host and the s6-overlay /init entrypoint. The image starts as
+#     root to remap to uid 10000 then drops each service to that non-root user —
+#     so cap_drop: ALL would break init. Services already run non-root.
 #
 services:
   gateway:
@@ -34,31 +47,19 @@ services:
       - HERMES_GID=${HERMES_GID:-10000}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      # Run the dashboard inside THIS container, loopback-only so its auth gate
+      # stays disengaged. Reach it via SSH tunnel to 127.0.0.1:9119.
+      - HERMES_DASHBOARD=1
+      - HERMES_DASHBOARD_HOST=127.0.0.1
+      - HERMES_DASHBOARD_PORT=9119
     command: ["gateway", "run"]
     security_opt:
       - no-new-privileges:true
-    mem_limit: 2g
-    pids_limit: 1024
-
-  dashboard:
-    build: .
-    pull_policy: build
-    image: hermes-agent
-    container_name: hermes-dashboard
-    restart: unless-stopped
-    network_mode: host
-    depends_on:
-      - gateway
-    volumes:
-      - hermes-data:/opt/data
-    environment:
-      - HERMES_UID=${HERMES_UID:-10000}
-      - HERMES_GID=${HERMES_GID:-10000}
-    command: ["dashboard", "--host", "127.0.0.1", "--no-open"]
-    security_opt:
-      - no-new-privileges:true
-    mem_limit: 1g
-    pids_limit: 512
+    # Now one container runs gateway + dashboard + (on demand) a headless
+    # Chromium and node/python session workers, so size higher than the old
+    # split. 4g suits an 8GB Pi 5; drop to ~2.5g on a 4GB board if it OOMs.
+    mem_limit: 4g
+    pids_limit: 4096
 
 volumes:
   hermes-data:
